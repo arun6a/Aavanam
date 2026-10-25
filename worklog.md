@@ -306,3 +306,87 @@ Stage Summary:
 - Repo is private (matches sponsor's dispatch-capture pattern).
 - GitHub PAT was used only for the push; git remote URL has been cleaned of credentials so future clones work with the standard `git clone https://github.com/arun6a/Aavanam.git` (will prompt for credentials, which is correct for a private repo).
 - The Z.ai preview app continues to run unchanged. No code modifications in this task — only docs/git/repo management.
+
+---
+Task ID: aavanam-day3-full-stack
+Agent: main (Z.ai CLI)
+Task: Build everything missing from the target architecture in one session: rebrand to Aavanam, multi-tenant auth, async queue, public API + API keys, dashboard, audit logs, XLSX export, additional file formats, webhooks, confidence scoring. Push to GitHub.
+
+Work Log:
+- Installed new deps: xlsx, mammoth, bcryptjs (35 packages total).
+- Updated Prisma schema with Organization, User, OrganizationMember, ApiKey, AuditLog, Webhook models. Existing Template + Job tables got organizationId foreign key.
+- Wrote scripts/seed-default-org.ts — creates default org + admin user + bundled templates for that org. Default login: admin@aavanam.local / aavanam123.
+- Built Phase 1 — Identity + multi-tenant:
+    - /src/lib/auth.ts — NextAuth config with Credentials provider + bcryptjs password hashing
+    - /src/app/api/auth/[...nextauth]/route.ts — NextAuth handler
+    - /src/lib/auth-context.ts — getAuthContext() resolves session OR API key to {organizationId, actorType, actorId, role}; generateApiKey() returns aava_<32chars> + bcrypt hash + 12-char prefix
+    - /src/components/auth/auth-provider.tsx — client-side SessionProvider wrapper
+    - /src/app/layout.tsx — wrapped {children} in AuthProvider
+    - All API routes refactored to require auth + scope by org
+- Built Phase 2 — Async job queue:
+    - /src/lib/queue/index.ts — in-memory queue (swap to Cloud Tasks later)
+    - /src/lib/queue/worker.ts — extracted full pipeline (PDF/Image/DOCX/XLSX → text → multi-invoice detect → LLM → validate → persist → webhook) into a standalone function
+    - /api/extract + /api/v1/extractions now return 202 + job_id immediately; client polls
+- Built Phase 3 — Public API (BRD §6.1):
+    - /api/v1/* namespace with versioned paths
+    - POST /api/v1/extractions — submit (async, 202 + job_id + status_url)
+    - GET  /api/v1/extractions/{id} — poll status + result
+    - GET  /api/v1/extractions/{id}/export?format=json|csv|xlsx — download
+    - GET  /api/v1/templates — list (API key auth)
+    - GET  /api/v1/templates/{id} — detail
+    - /api/api-keys GET/POST + /api/api-keys/[id] DELETE — generate/revoke UI
+- Built Phase 4 — Dashboard + audit logs:
+    - /src/components/extraction/dashboard.tsx — Recharts bar+pie+pie charts, last 30 days, by-template breakdown, recent activity feed, cost estimate (gpt-4o-mini pricing)
+    - /src/app/api/stats/route.ts — aggregates jobs/templates/api_keys/audit_events + cost + processing time
+    - /src/lib/audit.ts — fire-and-forget logAuditEvent() helper; called from every state-changing API route
+    - AuditLog Prisma model with organizationId, actorId, actorType, action, resourceType, resourceId, metadataJson
+    - /api/audit-logs GET — list logs for org with actor email join
+    - Settings tab shows audit log viewer
+- Built Phase 5 — XLSX export + Confidence scoring:
+    - /src/lib/export/export.ts — added exportXlsx() with two sheets (Document Summary + Line Items)
+    - /api/jobs/[id]/export + /api/v1/extractions/[id]/export now accept format=xlsx (31 KB Excel file)
+    - XLSX download button added to Extract tab + History tab
+    - LLM prompt now asks for _confidence per-field (0.0-1.0); appears in extracted JSON
+- Phase 0 — Rebrand to Aavanam:
+    - Page title + browser tab title + package metadata updated to "Aavanam"
+    - Login page shows Aavanam branding + Sparkles icon
+    - Header shows "Aavanam · AI Document Extraction · <org name>"
+- Additional file formats:
+    - TIFF (Tesseract handles natively via system CLI)
+    - DOCX via mammoth.extractRawText()
+    - XLSX/XLS input via xlsx package (sheet → CSV → text)
+- Webhooks:
+    - Webhook Prisma model with url, secret (HMAC), events filter, lastTriggeredAt, lastResponseCode
+    - /api/webhooks GET/POST + /api/webhooks/[id] DELETE — CRUD endpoints
+    - /src/lib/webhooks.ts — fireWebhooksForJob() fires on job.completed/failed/review_required
+    - HMAC-SHA256 signature in X-Aavanam-Signature header (sha256=<hex>)
+    - 10s timeout per webhook, fire-and-forget, per-webhook last response code tracking
+- Multi-invoice heuristic fix: previously triggered when "Invoice" appeared 2+ times in text (single-doc invoices mention "Invoice" in headers + line items + totals — false positive). Now requires 2+ DISTINCT invoice numbers captured from "Invoice No: <X>" patterns. Single-invoice PDFs no longer wrongly split.
+- Lint clean throughout (eslint .).
+- Verified end-to-end via curl + agent-browser:
+    - Login page renders with Aavanam branding + pre-filled demo creds
+    - Sign-in → 5 tabs visible (Dashboard/Extract/Template/History/Settings)
+    - Dashboard shows stats: Total jobs, Success rate, Avg processing time, 30-day chart
+    - Settings shows Profile, API Keys (generate/revoke), Webhooks (add/remove), Audit Log (immutable list)
+    - History shows jobs with JSON/CSV/XLSX download buttons
+    - Public API works: generate API key → curl -H "Authorization: Bearer <key>" /api/v1/extractions → 202 + job_id → poll → completed
+    - XLSX export: 31 KB valid Excel file, opens in Excel
+    - Indian GST invoice (single) extracted with all 26 fields + 5 line items via public API + async queue
+    - Multi-invoice detection correctly skipped for single-invoice PDFs (was false-positive before fix)
+
+KNOWN ISSUES (not fixed in this session — flagged for friend's testing):
+- Multi-invoice splitter is non-deterministic — sometimes cuts chunks too narrowly, missing line items
+- LLM sometimes misinterprets DD/MM/YYYY dates as MM/DD/YYYY (basic invoice template doesn't have explicit date-format instructions)
+- Confidence scoring returned but not yet visualized as dots in UI (Phase 5 future enhancement)
+- Async queue is in-memory only — doesn't survive server restarts (acceptable for dev; production needs Cloud Tasks)
+- SQLite DB — swap to PostgreSQL when deploying to GCP (Phase 6 — needs friend's GCP account)
+
+Stage Summary:
+- All architectural modules from the friend's diagram are now built EXCEPT real Cloud Run + GCS + Cloud Tasks (need real GCP infrastructure — deferred to Phase 6 when friend deploys).
+- Total commits on GitHub: 3 (Initial MVP, worklog update, this multi-tenant commit).
+- Repo: https://github.com/arun6a/Aavanam (private)
+- Live preview: https://preview-z-ai.space-z.ai/
+- Default login: admin@aavanam.local / aavanam123
+- Sample test data: upload/sample-invoices/ (3 generated Western PDFs + 1 PNG) + upload/ANNEXURE*.pdf (2 real Indian GST invoices from sponsor)
+- 39 files changed in this commit (+3105 lines, -544)
+- 24 new files added: 4 lib modules (auth, auth-context, audit, webhooks), 2 lib sub-dirs (queue/), 14 new API routes (api-keys, audit-logs, auth, stats, v1/*, webhooks), 3 new components (auth-provider, dashboard, settings-panel), 1 seed script
