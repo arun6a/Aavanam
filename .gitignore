@@ -1,0 +1,89 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Aavanam .gitignore
+#
+# Excludes:
+#   - Node.js build outputs and dependencies
+#   - Local environment files (secrets)
+#   - Local SQLite DB (dev state)
+#   - Other projects that share the workspace (dispatch-capture, android-test)
+#   - Z.ai infrastructure files (.zscripts, dev.log)
+#   - Sample uploads beyond the test set
+# ────────────────────────────────────────────────────────────────────────────
+
+# Node.js / Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Bun
+bun.lock
+.bun/
+
+# Environment files (NEVER commit secrets)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+*.env
+
+# Local database (dev state — Prisma regenerates on `bun run db:push`)
+db/
+*.db
+*.db-journal
+
+# Logs
+dev.log
+server.log
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ────────────────────────────────────────────────────────────────────────────
+# Other projects that share the workspace (DO NOT commit to Aavanam repo)
+# ────────────────────────────────────────────────────────────────────────────
+dispatch-capture/
+android-test/
+
+# Z.ai infrastructure (not part of the Aavanam app)
+.zscripts/
+skills/
+tool-results/
+mini-services/
+Caddyfile
+examples/
+tests/
+
+# PackCAM toolchain scripts (other project, not part of Aavanam)
+scripts/build_dispatch_capture.sh
+scripts/build_test_apk.sh
+scripts/install_android_sdk.sh
+scripts/install_gradle.sh
+scripts/install_jdk.sh
+scripts/install_sdk_packages.sh
+scripts/reinstall_toolchain.sh
+
+# Test/build screenshots and intermediate files in download/
+download/
+
+# Upload files — keep ONLY the sample invoices for testing, exclude everything else
+upload/*
+!upload/sample-invoices/
+!upload/ANNEXURE*.pdf
+!upload/IMG-20261025-WA0003.jpg
+
+# Temp files
+*.tmp
+*.bak
+.cache/

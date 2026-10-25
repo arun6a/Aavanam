@@ -1,0 +1,83 @@
+// AI Document Extraction Platform — Prisma schema
+// Matches BRD §7 baseline (Template, TemplateVersion, Job, Result, Export)
+// Simplified for 2-day MVP: single-user mode, no orgs/users table, no API key table
+// (one key in env). SQLite for now; structurally identical to PostgreSQL for later migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Template {
+  id           String   @id @default(cuid())
+  name         String
+  documentType String   @default("invoice")
+  // JSON-encoded array of field definitions:
+  //   [{ name, type, required, description, sample }]
+  // type: "string" | "number" | "date" | "currency" | "email" | "phone" | "line_items"
+  // line_items is special: it's an array of objects with sub-fields.
+  fieldsJson    String
+  instructions  String?  // free-text extraction instructions for the LLM
+  isPublished   Boolean  @default(false)
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  jobs Job[]
+}
+
+model Job {
+  id            String   @id @default(cuid())
+  templateId    String
+  template      Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  // Source file metadata (file bytes live in filesystem, not DB)
+  fileName      String
+  fileSize      Int
+  mimeType      String
+  storagePath   String   // absolute path on disk
+
+  // Pipeline state
+  status        String   @default("queued")  // queued | processing | completed | failed | review_required
+  stage         String?  // upload | parsing | ocr | extraction | validation | done
+
+  // OCR results (stored for engine comparison + later review)
+  ocrEngine     String?  // tesseract | paddleocr | none (digital PDF)
+  ocrText       String?  // raw OCR output
+  ocrConfidence Float?
+  ocrTimeMs     Int?
+
+  // PDF parsing results (for digital PDFs that have native text)
+  pdfTextLength Int?     // 0 means scanned — needs OCR
+  pdfTimeMs     Int?
+
+  // LLM extraction results
+  extractedJson String?  // raw LLM response as JSON string
+  llmModel      String?
+  llmTimeMs     Int?
+  llmTokensIn   Int?
+  llmTokensOut  Int?
+
+  // Validation
+  validationJson String? // { is_valid, missing_fields, issues }
+  validationTimeMs Int?
+
+  // Error / diagnostics
+  errorMessage String?
+  errorCode    String?
+
+  totalProcessingMs Int?
+
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+}
+
+model Setting {
+  // key/value store for app-level settings (current template, etc.)
+  id    String @id
+  value String
+}
