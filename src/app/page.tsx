@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { useSession, signOut, signIn } from 'next-auth/react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Sparkles, FileText, Settings, History, Download } from 'lucide-react'
+import { Sparkles, FileText, Settings, History, Download, LayoutDashboard, LogOut, User } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 
 import { UploadPanel } from '@/components/extraction/upload-panel'
@@ -15,9 +16,12 @@ import { TemplateEditor } from '@/components/extraction/template-editor'
 import { JobHistory } from '@/components/extraction/job-history'
 import { EngineCompare } from '@/components/extraction/engine-compare'
 import { AnalyseSampleButton } from '@/components/extraction/analyse-sample-button'
+import { Dashboard } from '@/components/extraction/dashboard'
+import { SettingsPanel } from '@/components/extraction/settings-panel'
 import type { TemplateDef, FieldDef } from '@/lib/templates/schema'
 
 export default function Home() {
+  const { data: session, status } = useSession()
   const { toast } = useToast()
   const [tab, setTab] = useState('extract')
   const [templates, setTemplates] = useState<TemplateDef[]>([])
@@ -28,60 +32,180 @@ export default function Home() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [refreshSignal, setRefreshSignal] = useState(0)
 
+  // ── Show login page if not authenticated ─────────────────────────────────
+  if (status === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <Sparkles className="h-8 w-8 animate-pulse text-primary" />
+          <div className="text-sm text-muted-foreground">Loading Aavanam…</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'unauthenticated' || !session) {
+    return <LoginPage />
+  }
+
+  return <AuthenticatedApp
+    session={session}
+    tab={tab}
+    setTab={setTab}
+    templates={templates}
+    setTemplates={setTemplates}
+    selectedTemplateId={selectedTemplateId}
+    setSelectedTemplateId={setSelectedTemplateId}
+    selectedTemplate={selectedTemplate}
+    setSelectedTemplate={setSelectedTemplate}
+    isProcessing={isProcessing}
+    setIsProcessing={setIsProcessing}
+    result={result}
+    setResult={setResult}
+    selectedJobId={selectedJobId}
+    setSelectedJobId={setSelectedJobId}
+    refreshSignal={refreshSignal}
+    setRefreshSignal={setRefreshSignal}
+  />
+}
+
+// ─── Login page (simple form — signup happens via API call) ─────────────────
+
+function LoginPage() {
+  const { toast } = useToast()
+  const [email, setEmail] = useState('admin@aavanam.local')
+  const [password, setPassword] = useState('aavanam123')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      // Use next-auth/react signIn which sets the session cookie properly
+      const result = await signIn('credentials', {
+        email,
+        password,
+        redirect: false,
+      })
+      if (result?.error) {
+        toast({ title: 'Login failed', description: 'Invalid email or password', variant: 'destructive' })
+        setLoading(false)
+        return
+      }
+      // Reload to apply session
+      window.location.reload()
+    } catch (e) {
+      toast({ title: 'Login failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-3 rounded-xl bg-primary p-3 w-fit">
+            <Sparkles className="h-7 w-7 text-primary-foreground" />
+          </div>
+          <CardTitle className="text-2xl">Aavanam</CardTitle>
+          <CardDescription>AI Document Extraction Platform</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                required
+              />
+            </div>
+            <Button type="submit" disabled={loading} className="w-full">
+              {loading ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </form>
+          <p className="text-xs text-muted-foreground mt-4 text-center">
+            Demo credentials are pre-filled: <code className="text-foreground">admin@aavanam.local</code> / <code className="text-foreground">aavanam123</code>
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ─── Main authenticated app ─────────────────────────────────────────────────
+
+type AuthenticatedAppProps = {
+  session: ReturnType<typeof useSession>['data']
+  tab: string
+  setTab: (t: string) => void
+  templates: TemplateDef[]
+  setTemplates: React.Dispatch<React.SetStateAction<TemplateDef[]>>
+  selectedTemplateId: string | null
+  setSelectedTemplateId: React.Dispatch<React.SetStateAction<string | null>>
+  selectedTemplate: TemplateDef | null
+  setSelectedTemplate: React.Dispatch<React.SetStateAction<TemplateDef | null>>
+  isProcessing: boolean
+  setIsProcessing: React.Dispatch<React.SetStateAction<boolean>>
+  result: ExtractionResponse | null
+  setResult: React.Dispatch<React.SetStateAction<ExtractionResponse | null>>
+  selectedJobId: string | null
+  setSelectedJobId: React.Dispatch<React.SetStateAction<string | null>>
+  refreshSignal: number
+  setRefreshSignal: React.Dispatch<React.SetStateAction<number>>
+}
+
+function AuthenticatedApp(props: AuthenticatedAppProps) {
+  const { session, tab, setTab } = props
+  const { toast } = useToast()
+
   // Load templates
   useEffect(() => {
     fetch('/api/templates')
       .then(r => r.json())
       .then(d => {
         const list: TemplateDef[] = d.templates ?? []
-        setTemplates(list)
-        if (list.length > 0 && selectedTemplateId == null) {
-          setSelectedTemplateId(list[0].id)
-          setSelectedTemplate(list[0])
+        props.setTemplates(list)
+        if (list.length > 0 && props.selectedTemplateId == null) {
+          props.setSelectedTemplateId(list[0].id)
+          props.setSelectedTemplate(list[0])
         }
       })
       .catch(e => toast({ title: 'Failed to load templates', description: String(e), variant: 'destructive' }))
-  }, [toast, selectedTemplateId])
-
-  // If no templates exist, seed the starter invoice template
-  useEffect(() => {
-    if (templates.length === 0) {
-      fetch('/api/templates', { method: 'PUT' })
-        .then(() => fetch('/api/templates'))
-        .then(r => r.json())
-        .then(d => {
-          const list: TemplateDef[] = d.templates ?? []
-          setTemplates(list)
-          if (list.length > 0) {
-            setSelectedTemplateId(list[0].id)
-            setSelectedTemplate(list[0])
-          }
-        })
-        .catch(e => toast({ title: 'Failed to seed starter template', description: String(e), variant: 'destructive' }))
-    }
-  }, [templates.length, toast])
+  }, [toast])
 
   const handleFileSelected = useCallback(async (file: File) => {
-    if (!selectedTemplateId) {
+    if (!props.selectedTemplateId) {
       toast({ title: 'No template selected', description: 'Pick or create a template first.', variant: 'destructive' })
       return
     }
-    setIsProcessing(true)
-    setResult(null)
+    props.setIsProcessing(true)
+    props.setResult(null)
     try {
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('templateId', selectedTemplateId)
-      // Multi-invoice mode: 'auto' by default — backend will detect bundled invoices
+      formData.append('templateId', props.selectedTemplateId)
       formData.append('multiInvoice', 'auto')
       const res = await fetch('/api/extract', { method: 'POST', body: formData })
       const data = await res.json()
       if (!res.ok) {
         throw new Error(data?.error?.message ?? `HTTP ${res.status}`)
       }
-      setResult(data as ExtractionResponse)
-      setSelectedJobId(data.job_id)
-      setRefreshSignal(s => s + 1)
+      props.setResult(data as ExtractionResponse)
+      props.setSelectedJobId(data.job_id)
+      props.setRefreshSignal(s => s + 1)
       toast({
         title: data.status === 'completed' ? 'Extraction complete' : 'Extraction has warnings',
         description: data.multi_invoice
@@ -91,25 +215,23 @@ export default function Home() {
     } catch (e) {
       toast({ title: 'Extraction failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
     } finally {
-      setIsProcessing(false)
+      props.setIsProcessing(false)
     }
-  }, [selectedTemplateId, toast])
+  }, [props, toast])
 
   const handleSelectJob = useCallback(async (jobId: string) => {
-    setSelectedJobId(jobId)
+    props.setSelectedJobId(jobId)
     try {
       const res = await fetch(`/api/jobs/${jobId}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error?.message ?? `HTTP ${res.status}`)
 
-      // The DB stores multi-invoice jobs as `{ documents: [...] }` and single-invoice
-      // jobs as the document data directly. Normalize to ExtractionResponse shape.
       const extracted = data.extracted_data ?? {}
       const validation = data.validation ?? { is_valid: false, missing_fields: [], issues: [] }
       const isMultiStored = validation.multi_invoice === true || (extracted && Array.isArray(extracted.documents))
 
       if (isMultiStored && extracted.documents) {
-        setResult({
+        props.setResult({
           job_id: data.id,
           status: data.status,
           template: { id: data.template.id, name: data.template.name },
@@ -122,7 +244,6 @@ export default function Home() {
           }) => ({
             marker: d.marker,
             data: d.data,
-            // Use per-doc validation if stored, fall back to aggregate
             validation: d.validation ?? validation,
           })),
           diagnostics: data.diagnostics ?? {},
@@ -130,7 +251,7 @@ export default function Home() {
           raw_llm_response: data.raw_llm_response ?? '',
         })
       } else {
-        setResult({
+        props.setResult({
           job_id: data.id,
           status: data.status,
           template: { id: data.template.id, name: data.template.name },
@@ -146,82 +267,79 @@ export default function Home() {
     } catch (e) {
       toast({ title: 'Failed to load job', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
     }
-  }, [toast])
+  }, [props, setTab, toast])
 
   const handleTemplateSaved = useCallback((t: TemplateDef) => {
-    setSelectedTemplate(t)
-    setTemplates(ts => ts.map(x => x.id === t.id ? t : x))
+    props.setSelectedTemplate(t)
+    props.setTemplates(ts => ts.map(x => x.id === t.id ? t : x))
     toast({ title: 'Template updated', description: t.name })
-  }, [toast])
+  }, [props, toast])
 
-  /**
-   * Handle "Analyse sample → suggest fields" → "Create new template" flow.
-   * Per BRD §3 US-03: System proposes fields with types and sample values;
-   * user can edit all suggestions. POSTs to /api/templates to create new.
-   */
   const handleNewTemplateCreated = useCallback(async (
     templateName: string, fields: FieldDef[], instructions: string
   ) => {
     const res = await fetch('/api/templates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: templateName,
-        documentType: 'invoice',
-        fields,
-        instructions,
-      }),
+      body: JSON.stringify({ name: templateName, documentType: 'invoice', fields, instructions }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err?.error?.message ?? `HTTP ${res.status}`)
     }
     const created = await res.json()
-    // Refresh templates list and select the new one
     const listRes = await fetch('/api/templates')
     const listData = await listRes.json()
     const list: TemplateDef[] = listData.templates ?? []
-    setTemplates(list)
+    props.setTemplates(list)
     const newTpl = list.find(t => t.id === created.id)
     if (newTpl) {
-      setSelectedTemplateId(newTpl.id)
-      setSelectedTemplate(newTpl)
+      props.setSelectedTemplateId(newTpl.id)
+      props.setSelectedTemplate(newTpl)
     }
-  }, [])
+  }, [props])
 
-  const download = useCallback((format: 'json' | 'csv') => {
-    if (!result?.job_id) return
-    window.open(`/api/jobs/${result.job_id}/export?format=${format}`, '_blank')
-  }, [result?.job_id])
+  const download = useCallback((format: 'json' | 'csv' | 'xlsx') => {
+    if (!props.result?.job_id) return
+    window.open(`/api/jobs/${props.result.job_id}/export?format=${format}`, '_blank')
+  }, [props.result?.job_id])
+
+  const orgName = (session?.user as { organizationName?: string } | undefined)?.organizationName ?? 'Aavanam'
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-card">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-primary p-2">
               <Sparkles className="h-5 w-5 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="font-bold text-lg leading-tight">AI Document Extraction Platform</h1>
+              <h1 className="font-bold text-lg leading-tight">Aavanam</h1>
               <p className="text-xs text-muted-foreground">
-                Upload · OCR · LLM extraction · Schema-validated JSON · CSV/JSON export
+                AI Document Extraction · {orgName}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-xs">v0.1 MVP</Badge>
-            <Badge variant="secondary" className="text-xs">Z.ai LLM</Badge>
-            <Badge variant="secondary" className="text-xs">Tesseract 5</Badge>
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
+              <User className="h-3.5 w-3.5" />
+              <span>{session?.user?.email}</span>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => signOut({ callbackUrl: '/' })}>
+              <LogOut className="h-3.5 w-3.5 mr-1.5" />Sign out
+            </Button>
           </div>
         </div>
       </header>
 
-      {/* Main */}
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid grid-cols-3 w-full max-w-md mb-6">
+          <TabsList className="grid grid-cols-5 w-full max-w-2xl mb-6">
+            <TabsTrigger value="dashboard" className="gap-1.5">
+              <LayoutDashboard className="h-4 w-4" /> Dashboard
+            </TabsTrigger>
             <TabsTrigger value="extract" className="gap-1.5">
               <FileText className="h-4 w-4" /> Extract
             </TabsTrigger>
@@ -231,7 +349,15 @@ export default function Home() {
             <TabsTrigger value="history" className="gap-1.5">
               <History className="h-4 w-4" /> History
             </TabsTrigger>
+            <TabsTrigger value="settings" className="gap-1.5">
+              <User className="h-4 w-4" /> Settings
+            </TabsTrigger>
           </TabsList>
+
+          {/* ────── Dashboard tab ────── */}
+          <TabsContent value="dashboard">
+            <Dashboard onJumpToJob={(jobId) => { props.setSelectedJobId(jobId); handleSelectJob(jobId) }} />
+          </TabsContent>
 
           {/* ────── Extract tab ────── */}
           <TabsContent value="extract" className="space-y-4">
@@ -239,9 +365,8 @@ export default function Home() {
               <CardHeader>
                 <CardTitle className="text-base">Step 1 — Choose template and upload a document</CardTitle>
                 <CardDescription>
-                  Pick a template, then drop a PDF, PNG, or JPG. The pipeline will
-                  parse (or OCR), call the LLM with the template's schema, and
-                  validate the result.
+                  Pick a template, then drop a PDF, PNG, JPG, TIFF, DOCX, or XLSX. The pipeline will
+                  parse (or OCR), call the LLM with the template's schema, and validate the result.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -249,46 +374,47 @@ export default function Home() {
                   <div className="space-y-1.5 flex-1 max-w-sm">
                     <label className="text-xs text-muted-foreground">Template</label>
                     <Select
-                      value={selectedTemplateId ?? ''}
+                      value={props.selectedTemplateId ?? ''}
                       onValueChange={(v) => {
-                        setSelectedTemplateId(v)
-                        const t = templates.find(t => t.id === v)
-                        if (t) setSelectedTemplate(t)
+                        props.setSelectedTemplateId(v)
+                        const t = props.templates.find(t => t.id === v)
+                        if (t) props.setSelectedTemplate(t)
                       }}
                     >
                       <SelectTrigger><SelectValue placeholder="Select template" /></SelectTrigger>
                       <SelectContent>
-                        {templates.map(t => (
-                          <SelectItem key={t.id} value={t.id}>
-                            {t.name}
-                          </SelectItem>
+                        {props.templates.map(t => (
+                          <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="text-xs text-muted-foreground pb-2">
-                    {selectedTemplate ? `${selectedTemplate.fields.length} fields` : '—'}
+                    {props.selectedTemplate ? `${props.selectedTemplate.fields.length} fields` : '—'}
                   </div>
                 </div>
-                <UploadPanel onFileSelected={handleFileSelected} isProcessing={isProcessing} />
+                <UploadPanel onFileSelected={handleFileSelected} isProcessing={props.isProcessing} />
               </CardContent>
             </Card>
 
-            {result && (
+            {props.result && (
               <>
                 <div className="flex items-center justify-end gap-2">
                   <Button variant="outline" size="sm" onClick={() => download('json')}>
-                    <Download className="h-3.5 w-3.5 mr-1" />Export JSON
+                    <Download className="h-3.5 w-3.5 mr-1" />JSON
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => download('csv')}>
-                    <Download className="h-3.5 w-3.5 mr-1" />Export CSV
+                    <Download className="h-3.5 w-3.5 mr-1" />CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => download('xlsx')}>
+                    <Download className="h-3.5 w-3.5 mr-1" />XLSX
                   </Button>
                 </div>
-                <ExtractionResult result={result} />
+                <ExtractionResult result={props.result} />
                 <EngineCompare
-                  ocrEngine={result.diagnostics.ocr_engine}
-                  ocrConfidence={result.diagnostics.ocr_confidence}
-                  ocrTimeMs={result.diagnostics.ocr_time_ms}
+                  ocrEngine={props.result.diagnostics.ocr_engine}
+                  ocrConfidence={props.result.diagnostics.ocr_confidence}
+                  ocrTimeMs={props.result.diagnostics.ocr_time_ms}
                 />
               </>
             )}
@@ -299,12 +425,12 @@ export default function Home() {
             <div className="flex items-center justify-end">
               <AnalyseSampleButton onTemplateCreated={handleNewTemplateCreated} />
             </div>
-            {selectedTemplate ? (
-              <TemplateEditor template={selectedTemplate} onSaved={handleTemplateSaved} />
+            {props.selectedTemplate ? (
+              <TemplateEditor template={props.selectedTemplate} onSaved={handleTemplateSaved} />
             ) : (
               <Card>
                 <CardContent className="py-12 text-center text-muted-foreground">
-                  No template loaded. The starter invoice template should appear shortly…
+                  No template loaded.
                 </CardContent>
               </Card>
             )}
@@ -313,19 +439,22 @@ export default function Home() {
           {/* ────── History tab ────── */}
           <TabsContent value="history">
             <JobHistory
-              selectedJobId={selectedJobId}
+              selectedJobId={props.selectedJobId}
               onSelectJob={handleSelectJob}
-              refreshSignal={refreshSignal}
+              refreshSignal={props.refreshSignal}
             />
+          </TabsContent>
+
+          {/* ────── Settings tab ────── */}
+          <TabsContent value="settings">
+            <SettingsPanel />
           </TabsContent>
         </Tabs>
       </main>
 
-      {/* Footer */}
       <footer className="border-t mt-12 py-6 text-center text-xs text-muted-foreground">
         <div className="max-w-6xl mx-auto px-4">
-          Per BRD §4 — provider-neutral adapters for OCR and LLM. Swap engines
-          without touching extraction code.
+          Aavanam · Per BRD §4 — provider-neutral adapters for OCR and LLM
         </div>
       </footer>
     </div>

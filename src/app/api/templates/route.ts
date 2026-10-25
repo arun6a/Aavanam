@@ -1,13 +1,16 @@
 /**
  * /api/templates
- *   GET    — list all templates
- *   POST   — create a new template
+ *   GET    — list templates for the current org
+ *   POST   — create new template (current org)
+ *   PUT    — seed bundled templates if none exist for current org
  *
- * Per BRD §6.1.
+ * Per BRD §5.1 — every record is scoped to the owning organization.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { getAuthContext } from '@/lib/auth-context'
+import { logAudit } from '@/lib/audit'
 import {
   serializeTemplateFields,
   deserializeTemplateFields,
@@ -16,7 +19,14 @@ import {
 } from '@/lib/templates/schema'
 
 export async function GET() {
-  const templates = await db.template.findMany({ orderBy: { createdAt: 'asc' } })
+  const ctx = await getAuthContext()
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
+  const templates = await db.template.findMany({
+    where: { organizationId: ctx.organizationId },
+    orderBy: { createdAt: 'asc' },
+  })
   return NextResponse.json({
     templates: templates.map(t => ({
       id: t.id,
@@ -33,7 +43,15 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
+  const ctx = await getAuthContext(req)
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
+  if (ctx.role === 'api' && !ctx.actorId) {
+    return NextResponse.json({ error: { code: 'FORBIDDEN', message: 'API keys cannot create templates.' } }, { status: 403 })
+  }
+
+  const body = await req.json().catch(() => ({}))
   const { name, documentType, fields, instructions } = body ?? {}
 
   if (!name || !Array.isArray(fields)) {
@@ -45,12 +63,22 @@ export async function POST(req: NextRequest) {
 
   const t = await db.template.create({
     data: {
+      organizationId: ctx.organizationId,
       name: String(name),
       documentType: String(documentType ?? 'invoice'),
       fieldsJson: serializeTemplateFields(fields as FieldDef[]),
       instructions: instructions ? String(instructions) : null,
     },
   })
+
+  await logAudit({
+    ctx,
+    action: 'template.create',
+    resourceType: 'template',
+    resourceId: t.id,
+    metadata: { name: t.name, documentType: t.documentType, fieldCount: (fields as FieldDef[]).length },
+  })
+
   return NextResponse.json({
     id: t.id,
     name: t.name,
@@ -61,11 +89,15 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * POST /api/templates/seed — install all bundled starter templates if none exist.
- * Per BRD §3 US-03: starter templates help users see what's possible immediately.
+ * PUT — seed bundled templates for the current org if none exist.
+ * (Idempotent — skips if org already has templates.)
  */
-export async function PUT() {
-  const existing = await db.template.count()
+export async function PUT(req: NextRequest) {
+  const ctx = await getAuthContext(req)
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
+  const existing = await db.template.count({ where: { organizationId: ctx.organizationId } })
   if (existing > 0) {
     return NextResponse.json({ message: 'Templates already exist', count: existing })
   }
@@ -73,6 +105,7 @@ export async function PUT() {
     BUNDLED_TEMPLATES.map(tpl =>
       db.template.create({
         data: {
+          organizationId: ctx.organizationId,
           name: tpl.name,
           documentType: tpl.documentType,
           fieldsJson: serializeTemplateFields(tpl.fields),
@@ -81,6 +114,15 @@ export async function PUT() {
       })
     )
   )
+  for (const t of created) {
+    await logAudit({
+      ctx,
+      action: 'template.seed',
+      resourceType: 'template',
+      resourceId: t.id,
+      metadata: { name: t.name },
+    })
+  }
   return NextResponse.json({
     message: `${created.length} starter templates seeded`,
     template_ids: created.map(t => t.id),

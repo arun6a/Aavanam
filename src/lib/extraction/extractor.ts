@@ -103,7 +103,12 @@ Rules:
 - For currency/number fields, return plain numbers (no $ or currency symbol).
 - For date fields, return ISO 8601 (YYYY-MM-DD).
 - For line_items, return an array of objects, one per line item in the document.
-- Do NOT include any field that is not in the schema above.`
+- Do NOT include any field that is not in the schema above.
+- ALSO include a special key "_confidence" with values 0.0–1.0 for each extracted field indicating your confidence the value is correct.
+  Format: { "_confidence": { "field_name": 0.95, ... } }
+  Use 1.0 for fields clearly visible in the document, 0.7–0.9 for inferred or partially visible,
+  0.0–0.3 for guesses, omit for null fields.
+- For line_items confidence, use "_confidence.line_items[i].field_name" pattern: { "_confidence": { "line_items": [{ "description": 0.95, ... }, ...] } }`
 
     const completion = await zai.chat.completions.create({
       messages: [

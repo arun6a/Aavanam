@@ -1,7 +1,7 @@
-// AI Document Extraction Platform — Prisma schema
-// Matches BRD §7 baseline (Template, TemplateVersion, Job, Result, Export)
-// Simplified for 2-day MVP: single-user mode, no orgs/users table, no API key table
-// (one key in env). SQLite for now; structurally identical to PostgreSQL for later migration.
+// Aavanam — AI Document Extraction Platform
+// Prisma schema. SQLite now, structurally identical to PostgreSQL when deployed.
+//
+// Models cover BRD §7 baseline + auth (Phase 1) + audit (Phase 4) + API keys (Phase 3).
 
 generator client {
   provider = "prisma-client-js"
@@ -12,59 +12,128 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── Auth + multi-tenant (Phase 1) ─────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  status    String   @default("active")  // active | suspended
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members   OrganizationMember[]
+  templates Template[]
+  jobs      Job[]
+  apiKeys   ApiKey[]
+  auditLogs AuditLog[]
+  webhooks  Webhook[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  status       String   @default("active")  // active | suspended
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships OrganizationMember[]
+  auditLogs   AuditLog[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String   @default("member")  // admin | member
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+// ─── Public API (Phase 3) ───────────────────────────────────────────────────
+
+model ApiKey {
+  id             String   @id @default(cuid())
+  organizationId String
+  // The full key is shown ONCE on creation, then we only store the hash.
+  // keyPrefix is the first 8 chars shown in the UI so users can identify keys.
+  keyPrefix      String
+  secretHash     String
+  name           String?  // human-friendly label e.g. "Production ERP"
+  scopes         String   @default("extract:write,extract:read,templates:read")
+  status         String   @default("active")  // active | revoked
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ─── Existing models (now scoped to Organization) ──────────────────────────
+
 model Template {
   id           String   @id @default(cuid())
+  organizationId String
   name         String
   documentType String   @default("invoice")
   // JSON-encoded array of field definitions:
   //   [{ name, type, required, description, sample }]
   // type: "string" | "number" | "date" | "currency" | "email" | "phone" | "line_items"
-  // line_items is special: it's an array of objects with sub-fields.
   fieldsJson    String
-  instructions  String?  // free-text extraction instructions for the LLM
-  isPublished   Boolean  @default(false)
-  version       Int      @default(1)
+  instructions  String?
+  isPublished   Boolean @default(false)
+  version       Int     @default(1)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   jobs Job[]
 }
 
 model Job {
   id            String   @id @default(cuid())
+  organizationId String
   templateId    String
-  template      Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
-  // Source file metadata (file bytes live in filesystem, not DB)
+  // Source file metadata
   fileName      String
   fileSize      Int
   mimeType      String
-  storagePath   String   // absolute path on disk
+  storagePath   String
 
-  // Pipeline state
-  status        String   @default("queued")  // queued | processing | completed | failed | review_required
+  // Pipeline state: queued | processing | completed | failed | review_required
+  status        String   @default("queued")
   stage         String?  // upload | parsing | ocr | extraction | validation | done
 
-  // OCR results (stored for engine comparison + later review)
-  ocrEngine     String?  // tesseract | paddleocr | none (digital PDF)
-  ocrText       String?  // raw OCR output
+  // OCR results
+  ocrEngine     String?
+  ocrText       String?
   ocrConfidence Float?
   ocrTimeMs     Int?
 
-  // PDF parsing results (for digital PDFs that have native text)
-  pdfTextLength Int?     // 0 means scanned — needs OCR
+  // PDF parsing
+  pdfTextLength Int?
   pdfTimeMs     Int?
 
-  // LLM extraction results
-  extractedJson String?  // raw LLM response as JSON string
+  // LLM extraction results (now also contains per-field confidence scores)
+  extractedJson String?
   llmModel      String?
   llmTimeMs     Int?
   llmTokensIn   Int?
   llmTokensOut  Int?
 
   // Validation
-  validationJson String? // { is_valid, missing_fields, issues }
+  validationJson String?
   validationTimeMs Int?
+
+  // Multi-invoice
+  multiInvoice  Boolean @default(false)
+  documentCount Int     @default(1)
 
   // Error / diagnostics
   errorMessage String?
@@ -72,12 +141,56 @@ model Job {
 
   totalProcessingMs Int?
 
+  // Webhook delivery state
+  webhookSent     Boolean   @default(false)
+  webhookSentAt   DateTime?
+  webhookResponse String?
+
   createdAt    DateTime @default(now())
   completedAt  DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     Template   @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
 
+// ─── Audit logs (Phase 4) ───────────────────────────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorId        String?  // User ID if action was by a logged-in user; null for API key actions
+  actorType      String   @default("user")  // user | api_key | system
+  action         String   // template.create, template.update, job.submit, job.complete, apikey.create, apikey.revoke, etc.
+  resourceType   String?  // template | job | api_key | webhook
+  resourceId     String?
+  requestId      String?
+  metadataJson   String?
+  timestamp      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+}
+
+// ─── Webhooks (Phase 3 — fire-on-completion) ────────────────────────────────
+
+model Webhook {
+  id             String   @id @default(cuid())
+  organizationId String
+  url            String   // HTTPS endpoint to POST to on completion
+  secret         String?  // HMAC signing secret
+  events         String   @default("job.completed,job.failed,job.review_required")
+  status         String   @default("active")  // active | paused
+  lastTriggeredAt DateTime?
+  lastResponseCode Int?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ─── Usage stats (Phase 4 — Dashboard) ──────────────────────────────────────
+// Stored as a flat record per job for easy aggregation queries.
+
 model Setting {
-  // key/value store for app-level settings (current template, etc.)
   id    String @id
   value String
 }

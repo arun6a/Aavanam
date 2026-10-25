@@ -70,7 +70,7 @@ export function JobHistory({ selectedJobId, onSelectJob, refreshSignal }: Props)
     }
   }
 
-  const download = async (jobId: string, format: 'json' | 'csv') => {
+  const download = async (jobId: string, format: 'json' | 'csv' | 'xlsx') => {
     window.open(`/api/jobs/${jobId}/export?format=${format}`, '_blank')
   }
 
@@ -146,6 +146,12 @@ export function JobHistory({ selectedJobId, onSelectJob, refreshSignal }: Props)
                         onClick={(e) => { e.stopPropagation(); download(job.id, 'csv') }}
                       >
                         <Download className="h-3 w-3 mr-1" />CSV
+                      </Button>
+                      <Button
+                        variant="outline" size="sm" className="h-6 text-xs px-2"
+                        onClick={(e) => { e.stopPropagation(); download(job.id, 'xlsx') }}
+                      >
+                        <Download className="h-3 w-3 mr-1" />XLSX
                       </Button>
                     </div>
                   )}

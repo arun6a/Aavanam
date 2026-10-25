@@ -1,23 +1,32 @@
 /**
- * /api/jobs/[id]/export?format=json|csv
- *   GET — download result as JSON or CSV
+ * /api/jobs/[id]/export?format=json|csv|xlsx
+ *   GET — download result in requested format
+ *
+ * Per BRD §6.5 + M7 — JSON, CSV, and XLSX exports.
+ * XLSX is two sheets: "Document Summary" (header fields) + "Line Items"
+ * (one row per line item with doc-level fields repeated).
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { deserializeTemplateFields } from '@/lib/templates/schema'
-import { exportJson, exportCsv, downloadFilename, type ExportFormat } from '@/lib/export/export'
+import { getAuthContext } from '@/lib/auth-context'
+import { deserializeTemplateFields, type TemplateDef } from '@/lib/templates/schema'
+import { exportJson, exportCsv, exportXlsx, downloadFilename, type ExportFormat } from '@/lib/export/export'
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const ctx = await getAuthContext(req)
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in or pass an API key.' } }, { status: 401 })
+  }
   const { id } = await params
   const url = new URL(req.url)
   const format = (url.searchParams.get('format') ?? 'json') as ExportFormat
 
-  const j = await db.job.findUnique({
-    where: { id },
+  const j = await db.job.findFirst({
+    where: { id, organizationId: ctx.organizationId },
     include: { template: true },
   })
   if (!j) {
@@ -28,7 +37,7 @@ export async function GET(
   }
 
   const data = JSON.parse(j.extractedJson) as Record<string, unknown>
-  const template = {
+  const template: TemplateDef = {
     id: j.template.id,
     name: j.template.name,
     documentType: j.template.documentType,
@@ -37,14 +46,17 @@ export async function GET(
   }
 
   const filename = downloadFilename(j.fileName.replace(/\.[^.]+$/, ''), format)
-  let body: string
+  let body: Buffer
   let contentType: string
 
   if (format === 'csv') {
-    body = exportCsv(data, template)
+    body = Buffer.from(exportCsv(data, template), 'utf-8')
     contentType = 'text/csv'
+  } else if (format === 'xlsx') {
+    body = exportXlsx(data, template)
+    contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   } else {
-    body = exportJson(data)
+    body = Buffer.from(exportJson(data), 'utf-8')
     contentType = 'application/json'
   }
 

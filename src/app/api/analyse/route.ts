@@ -1,26 +1,40 @@
 /**
  * POST /api/analyse
  *   multipart/form-data:
- *     file: PDF/PNG/JPG (sample document)
+ *     file: PDF/PNG/JPG/TIFF/DOCX/XLSX (sample document)
  *   Returns: AI-suggested field definitions to seed the template builder.
  *
  * Per BRD §3 US-03 — "System proposes fields with types and sample values;
  * user can edit all suggestions."
+ *
+ * Org-scoped: requires authentication (session OR API key).
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { fileTypeFromBuffer } from 'file-type'
-
 import { extractPdfText } from '@/lib/pdf/extract'
 import { runOcrEngines } from '@/lib/ocr'
-import { getLlmAdapter } from '@/lib/extraction/extractor'
-import { parseLlmJson } from '@/lib/extraction/extractor'
+import { parseLlmJsonOrArray, detectDocType } from '@/lib/extraction/analyse-helpers'
+import { getAuthContext } from '@/lib/auth-context'
 import type { FieldDef } from '@/lib/templates/schema'
 
 const MAX_SIZE = 10 * 1024 * 1024
-const ALLOWED = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp']
+const ALLOWED = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+  'image/tiff',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]
 
 export async function POST(req: NextRequest) {
+  const ctx = await getAuthContext(req)
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in or pass an API key.' } }, { status: 401 })
+  }
   try {
     const formData = await req.formData()
     const file = formData.get('file')
@@ -47,6 +61,14 @@ export async function POST(req: NextRequest) {
       } else {
         text = pdf.text
       }
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.name.toLowerCase().endsWith('.docx')) {
+      const mammoth = (await import('mammoth')).default
+      const r = await mammoth.extractRawText({ buffer })
+      text = r.value
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.name.toLowerCase().endsWith('.xlsx')) {
+      const XLSX = (await import('xlsx')).default
+      const wb = XLSX.read(buffer, { type: 'buffer' })
+      text = wb.SheetNames.map(s => `# Sheet: ${s}\n${XLSX.utils.sheet_to_csv(wb.Sheets[s])}`).join('\n\n')
     } else {
       const ocr = await runOcrEngines(buffer, mimeType, ['tesseract'])
       text = ocr[0]?.text ?? ''
@@ -60,10 +82,10 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    const llm = getLlmAdapter()
-    const zai = await (await import('z-ai-web-dev-sdk')).default.create()
+    const zai = (await import('z-ai-web-dev-sdk')).default
+    const z = await zai.create()
 
-    const systemPrompt = `You are a document analysis assistant. The user has uploaded a sample ${mimeType === 'application/pdf' ? 'PDF' : 'image'} and wants to know what fields they should extract from documents like this.
+    const systemPrompt = `You are a document analysis assistant. The user has uploaded a sample ${mimeType === 'application/pdf' ? 'PDF' : mimeType.includes('image') ? 'image' : 'document'} and wants to know what fields they should extract from documents like this.
 
 Inspect the document text below and propose a list of fields. For each field, return:
   {
@@ -80,7 +102,7 @@ with a "subFields" array listing the per-line columns (e.g. description, quantit
 
 Return ONLY a JSON array of field objects — no markdown fences, no commentary.`
 
-    const completion = await zai.chat.completions.create({
+    const completion = await z.chat.completions.create({
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Document text:\n\n${text}` },
@@ -101,37 +123,4 @@ Return ONLY a JSON array of field objects — no markdown fences, no commentary.
     console.error('[analyse] error:', e)
     return NextResponse.json({ error: { code: 'INTERNAL', message: e instanceof Error ? e.message : 'Unknown' } }, { status: 500 })
   }
-}
-
-/** Tries to parse either a JSON array or a {fields: [...]} wrapper. */
-function parseLlmJsonOrArray(raw: string): unknown {
-  // Try as-is first
-  try { return JSON.parse(raw) } catch {}
-  // Unwrap markdown
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-  if (fence) {
-    try { return JSON.parse(fence[1].trim()) } catch {}
-  }
-  // Find the largest [...] or {...} block
-  const arrStart = raw.indexOf('[')
-  const arrEnd = raw.lastIndexOf(']')
-  const objStart = raw.indexOf('{')
-  const objEnd = raw.lastIndexOf('}')
-  if (arrStart !== -1 && arrEnd > arrStart) {
-    try { return JSON.parse(raw.slice(arrStart, arrEnd + 1)) } catch {}
-  }
-  if (objStart !== -1 && objEnd > objStart) {
-    try { return JSON.parse(raw.slice(objStart, objEnd + 1)) } catch {}
-  }
-  return []
-}
-
-function detectDocType(text: string): string {
-  const t = text.toLowerCase()
-  if (t.includes('invoice') || t.includes('bill to')) return 'invoice'
-  if (t.includes('receipt')) return 'receipt'
-  if (t.includes('purchase order') || t.includes('po number')) return 'purchase_order'
-  if (t.includes('packing slip') || t.includes('tracking number')) return 'packing_slip'
-  if (t.includes('quotation') || t.includes('quote')) return 'quotation'
-  return 'unknown'
 }

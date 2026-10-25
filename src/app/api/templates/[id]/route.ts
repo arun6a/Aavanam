@@ -1,24 +1,36 @@
 /**
  * /api/templates/[id]
- *   GET    — get one template
- *   PATCH  — update a draft template (BRD says published versions are immutable)
- *   DELETE — delete a template (cascade-deletes its jobs)
+ *   GET    — get one template (must belong to current org)
+ *   PATCH  — update a draft template
+ *   DELETE — delete a template (cascade-deletes jobs)
+ *
+ * Per BRD §5.1 — organization-scoped access enforced on every query.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { getAuthContext } from '@/lib/auth-context'
+import { logAudit } from '@/lib/audit'
 import {
   serializeTemplateFields,
   deserializeTemplateFields,
   type FieldDef,
 } from '@/lib/templates/schema'
 
+async function getTemplateForOrg(templateId: string, organizationId: string) {
+  return db.template.findFirst({ where: { id: templateId, organizationId } })
+}
+
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const ctx = await getAuthContext(req)
+  if (!ctx) {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
   const { id } = await params
-  const t = await db.template.findUnique({ where: { id } })
+  const t = await getTemplateForOrg(id, ctx.organizationId)
   if (!t) {
     return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Template not found' } }, { status: 404 })
   }
@@ -39,11 +51,15 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const ctx = await getAuthContext(req)
+  if (!ctx || ctx.role === 'api') {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
   const { id } = await params
-  const body = await req.json()
+  const body = await req.json().catch(() => ({}))
   const { name, documentType, fields, instructions } = body ?? {}
 
-  const existing = await db.template.findUnique({ where: { id } })
+  const existing = await getTemplateForOrg(id, ctx.organizationId)
   if (!existing) {
     return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Template not found' } }, { status: 404 })
   }
@@ -63,6 +79,14 @@ export async function PATCH(
     },
   })
 
+  await logAudit({
+    ctx,
+    action: 'template.update',
+    resourceType: 'template',
+    resourceId: updated.id,
+    metadata: { name: updated.name },
+  })
+
   return NextResponse.json({
     id: updated.id,
     name: updated.name,
@@ -74,12 +98,27 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const ctx = await getAuthContext(req)
+  if (!ctx || ctx.role === 'api') {
+    return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'Sign in required.' } }, { status: 401 })
+  }
   const { id } = await params
+  const existing = await getTemplateForOrg(id, ctx.organizationId)
+  if (!existing) {
+    return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Template not found' } }, { status: 404 })
+  }
   try {
     await db.template.delete({ where: { id } })
+    await logAudit({
+      ctx,
+      action: 'template.delete',
+      resourceType: 'template',
+      resourceId: id,
+      metadata: { name: existing.name },
+    })
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Template not found' } }, { status: 404 })

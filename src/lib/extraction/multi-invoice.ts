@@ -27,23 +27,38 @@ export type InvoiceChunk = {
 }
 
 /**
- * Quick heuristic check: count occurrences of common invoice-number markers
- * in the text. If we see 2+ markers, the document likely has multiple invoices.
+ * Quick heuristic check: detect if the text contains multiple DISTINCT
+ * invoice numbers (not just multiple uses of the word "Invoice").
+ *
+ * We look for patterns like:
+ *   - "Invoice No: <something>" or "Invoice Number: <something>" (multiple)
+ *   - "Invoice No. <num1> ... Invoice No. <num2>" (distinct values)
+ *
+ * A single document can mention "Invoice" 5 times (header + line items +
+ * totals) without being a bundled multi-invoice PDF.
  */
 export function hasMultipleInvoiceMarkers(text: string): boolean {
+  // Find all "Invoice No:" / "Invoice Number:" / "Tax Invoice No:" / "INV. NO:" matches
+  // and extract the actual invoice number after the colon.
   const patterns = [
-    /\bInvoice\s*No[:\s]/gi,
-    /\bInvoice\s*Number[:\s]/gi,
-    /\bTax\s*Invoice\s*No[:\s]/gi,
-    /\bANNEXURE\s*(?:OF\s*)?TAX\s*INVOICE/gi,
-    /\bINV\.?\s*NO\.?\s*[:\s]/gi,
+    /\bInvoice\s*No[:.]\s*([^\s]+)/gi,
+    /\bInvoice\s*Number[:.]\s*([^\s]+)/gi,
+    /\bTax\s*Invoice\s*No[:.]\s*([^\s]+)/gi,
+    /\bINV\.?\s*NO\.?\s*[:.]\s*([^\s]+)/gi,
+    /\bInvoice\s*No[:.]\s*([A-Z]{2,}\/[0-9-]+\/[0-9]+)/gi,  // e.g. CB/2026-27/011
   ]
-  let count = 0
+  const invoiceNumbers = new Set<string>()
   for (const p of patterns) {
-    const matches = text.match(p)
-    if (matches) count += matches.length
+    let m
+    while ((m = p.exec(text)) !== null) {
+      // m[1] is the captured group — the invoice number itself
+      if (m[1] && m[1].length >= 3) {
+        invoiceNumbers.add(m[1].trim())
+      }
+    }
   }
-  return count >= 2
+  // Trigger only if 2+ DISTINCT invoice numbers found
+  return invoiceNumbers.size >= 2
 }
 
 /**
