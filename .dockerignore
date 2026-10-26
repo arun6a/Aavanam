@@ -1,0 +1,61 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+.next
+out
+build
+dist
+
+# Environment (NEVER commit secrets)
+.env
+.env*.local
+.env.development
+.env.production
+
+# Local database (dev state)
+db/
+*.db
+*.db-journal
+
+# Logs
+dev.log
+server.log
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode
+.idea
+
+# Other projects in shared workspace
+dispatch-capture
+android-test
+
+# Z.ai infrastructure (not part of Aavanam)
+.zscripts
+skills
+tool-results
+mini-services
+Caddyfile
+examples
+tests
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Docs (large, kept in repo not in image)
+docs
+
+# Test data (kept in repo not in image)
+upload

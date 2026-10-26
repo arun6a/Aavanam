@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Sparkles, FileText, Settings, History, Download, LayoutDashboard, LogOut, User } from 'lucide-react'
+import { Sparkles, FileText, Settings, History, Download, LayoutDashboard, LogOut, User as UserIcon, BookOpen } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 
 import { UploadPanel } from '@/components/extraction/upload-panel'
@@ -18,6 +18,7 @@ import { EngineCompare } from '@/components/extraction/engine-compare'
 import { AnalyseSampleButton } from '@/components/extraction/analyse-sample-button'
 import { Dashboard } from '@/components/extraction/dashboard'
 import { SettingsPanel } from '@/components/extraction/settings-panel'
+import { UsersPanel } from '@/components/extraction/users-panel'
 import type { TemplateDef, FieldDef } from '@/lib/templates/schema'
 
 export default function Home() {
@@ -69,30 +70,50 @@ export default function Home() {
   />
 }
 
-// ─── Login page (simple form — signup happens via API call) ─────────────────
+// ─── Login + Signup page ───────────────────────────────────────────────────
 
 function LoginPage() {
   const { toast } = useToast()
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
   const [email, setEmail] = useState('admin@aavanam.local')
   const [password, setPassword] = useState('aavanam123')
+  const [name, setName] = useState('')
+  const [orgName, setOrgName] = useState('')
   const [loading, setLoading] = useState(false)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
+
+    if (mode === 'signup') {
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password, name, orgName }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error?.message ?? `HTTP ${res.status}`)
+        toast({ title: 'Account created!', description: 'You can now sign in with your email + password.' })
+        setMode('signin')
+        // Pre-fill the email so they can just sign in
+        setEmail(email)
+        setLoading(false)
+      } catch (e) {
+        toast({ title: 'Sign-up failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
+        setLoading(false)
+      }
+      return
+    }
+
+    // Sign in
     try {
-      // Use next-auth/react signIn which sets the session cookie properly
-      const result = await signIn('credentials', {
-        email,
-        password,
-        redirect: false,
-      })
+      const result = await signIn('credentials', { email, password, redirect: false })
       if (result?.error) {
         toast({ title: 'Login failed', description: 'Invalid email or password', variant: 'destructive' })
         setLoading(false)
         return
       }
-      // Reload to apply session
       window.location.reload()
     } catch (e) {
       toast({ title: 'Login failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
@@ -111,7 +132,49 @@ function LoginPage() {
           <CardDescription>AI Document Extraction Platform</CardDescription>
         </CardHeader>
         <CardContent>
+          {/* Mode toggle */}
+          <div className="flex gap-1 mb-4 p-1 bg-muted rounded-md">
+            <button
+              type="button"
+              onClick={() => setMode('signin')}
+              className={`flex-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${mode === 'signin' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('signup')}
+              className={`flex-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${mode === 'signup' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+            >
+              Create account
+            </button>
+          </div>
+
           <form onSubmit={submit} className="space-y-3">
+            {mode === 'signup' && (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">Your name</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Jane Doe"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">Organization name</label>
+                  <input
+                    type="text"
+                    value={orgName}
+                    onChange={(e) => setOrgName(e.target.value)}
+                    placeholder="Your Company Pvt Ltd"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+              </>
+            )}
             <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground">Email</label>
               <input
@@ -123,7 +186,7 @@ function LoginPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs text-muted-foreground">Password</label>
+              <label className="text-xs text-muted-foreground">Password {mode === 'signup' && '(min 8 chars)'}</label>
               <input
                 type="password"
                 value={password}
@@ -133,12 +196,17 @@ function LoginPage() {
               />
             </div>
             <Button type="submit" disabled={loading} className="w-full">
-              {loading ? 'Signing in…' : 'Sign in'}
+              {loading
+                ? (mode === 'signin' ? 'Signing in…' : 'Creating account…')
+                : (mode === 'signin' ? 'Sign in' : 'Create account + sign in')
+              }
             </Button>
           </form>
-          <p className="text-xs text-muted-foreground mt-4 text-center">
-            Demo credentials are pre-filled: <code className="text-foreground">admin@aavanam.local</code> / <code className="text-foreground">aavanam123</code>
-          </p>
+          {mode === 'signin' && (
+            <p className="text-xs text-muted-foreground mt-4 text-center">
+              Demo credentials are pre-filled: <code className="text-foreground">admin@aavanam.local</code> / <code className="text-foreground">aavanam123</code>
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -323,8 +391,11 @@ function AuthenticatedApp(props: AuthenticatedAppProps) {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <a href="/docs/api" target="_blank" rel="noopener noreferrer" className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1">
+              <BookOpen className="h-3.5 w-3.5" />API docs
+            </a>
             <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
-              <User className="h-3.5 w-3.5" />
+              <UserIcon className="h-3.5 w-3.5" />
               <span>{session?.user?.email}</span>
             </div>
             <Button variant="ghost" size="sm" onClick={() => signOut({ callbackUrl: '/' })}>
@@ -336,7 +407,7 @@ function AuthenticatedApp(props: AuthenticatedAppProps) {
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid grid-cols-5 w-full max-w-2xl mb-6">
+          <TabsList className="grid grid-cols-6 w-full max-w-3xl mb-6">
             <TabsTrigger value="dashboard" className="gap-1.5">
               <LayoutDashboard className="h-4 w-4" /> Dashboard
             </TabsTrigger>
@@ -349,8 +420,11 @@ function AuthenticatedApp(props: AuthenticatedAppProps) {
             <TabsTrigger value="history" className="gap-1.5">
               <History className="h-4 w-4" /> History
             </TabsTrigger>
+            <TabsTrigger value="users" className="gap-1.5">
+              <UserIcon className="h-4 w-4" /> Users
+            </TabsTrigger>
             <TabsTrigger value="settings" className="gap-1.5">
-              <User className="h-4 w-4" /> Settings
+              <Settings className="h-4 w-4" /> Settings
             </TabsTrigger>
           </TabsList>
 
@@ -443,6 +517,11 @@ function AuthenticatedApp(props: AuthenticatedAppProps) {
               onSelectJob={handleSelectJob}
               refreshSignal={props.refreshSignal}
             />
+          </TabsContent>
+
+          {/* ────── Users tab ────── */}
+          <TabsContent value="users">
+            <UsersPanel />
           </TabsContent>
 
           {/* ────── Settings tab ────── */}

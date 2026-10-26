@@ -1,0 +1,202 @@
+# Aavanam PostgreSQL Prisma schema
+# Use this when deploying to Google Cloud SQL (or any PostgreSQL provider).
+#
+# To switch:
+#   1. Set DATABASE_URL=postgresql://... in .env
+#   2. Replace prisma/schema.prisma with this file:
+#        cp prisma/schema.postgres.prisma prisma/schema.prisma
+#   3. Run: bun run db:push  (creates tables in PostgreSQL)
+#   4. Run: bun run scripts/seed-default-org.ts  (seeds default org + admin)
+#
+# The schema is identical to schema.prisma (SQLite) except:
+#   - datasource provider = "postgresql" instead of "sqlite"
+#   - no other changes needed (Prisma handles the SQL dialect differences)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth + multi-tenant ──────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members   OrganizationMember[]
+  templates Template[]
+  jobs      Job[]
+  apiKeys   ApiKey[]
+  auditLogs AuditLog[]
+  webhooks  Webhook[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships OrganizationMember[]
+  auditLogs   AuditLog[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String   @default("member")
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+// ─── Public API ────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId  String
+  keyPrefix      String
+  secretHash     String
+  name           String?
+  scopes         String    @default("extract:write,extract:read,templates:read")
+  status         String    @default("active")
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([keyPrefix])
+}
+
+// ─── Existing models (scoped to Organization) ─────────────────────────────
+
+model Template {
+  id            String   @id @default(cuid())
+  organizationId String
+  name          String
+  documentType  String   @default("invoice")
+  fieldsJson    String
+  instructions  String?
+  isPublished   Boolean  @default(false)
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobs Job[]
+
+  @@index([organizationId])
+}
+
+model Job {
+  id            String   @id @default(cuid())
+  organizationId String
+  templateId    String
+
+  fileName      String
+  fileSize      Int
+  mimeType      String
+  storagePath   String
+
+  status        String   @default("queued")
+  stage         String?
+
+  ocrEngine     String?
+  ocrText       String?
+  ocrConfidence Float?
+  ocrTimeMs     Int?
+
+  pdfTextLength Int?
+  pdfTimeMs     Int?
+
+  extractedJson String?
+  llmModel      String?
+  llmTimeMs     Int?
+  llmTokensIn   Int?
+  llmTokensOut  Int?
+
+  validationJson String?
+  validationTimeMs Int?
+
+  multiInvoice  Boolean @default(false)
+  documentCount Int     @default(1)
+
+  errorMessage String?
+  errorCode    String?
+
+  totalProcessingMs Int?
+
+  webhookSent     Boolean   @default(false)
+  webhookSentAt   DateTime?
+  webhookResponse String?
+
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     Template   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ─── Audit logs ────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorId        String?
+  actorType      String   @default("user")
+  action         String
+  resourceType   String?
+  resourceId     String?
+  requestId      String?
+  metadataJson   String?
+  timestamp      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([timestamp])
+}
+
+// ─── Webhooks ──────────────────────────────────────────────────────────────
+
+model Webhook {
+  id             String   @id @default(cuid())
+  organizationId String
+  url            String
+  secret         String?
+  events         String   @default("job.completed,job.failed,job.review_required")
+  status         String   @default("active")
+  lastTriggeredAt DateTime?
+  lastResponseCode Int?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+model Setting {
+  id    String @id
+  value String
+}
